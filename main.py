@@ -228,6 +228,41 @@ def get_historical_data(country: str):
             "number_of_commodities": int(row['commodity'])
         } for _, row in historical.iterrows()]
     }
+@app.get("/stats/production/{country}")
+def get_production_data(country: str):
+    """Obtener los productos principales producidos por un país"""
+    if df.empty:
+        raise HTTPException(status_code=500, detail="Datos no disponibles")
+
+    # Normalizar el nombre del país
+    normalized_country = COUNTRY_MAPPING.get(country, country)
+    if not normalized_country:
+        raise HTTPException(status_code=404, detail=f"País no válido: {country}")
+
+    # Filtrar los datos del país
+    country_data = df[df['normalized_country'] == normalized_country]
+    if country_data.empty:
+        raise HTTPException(status_code=404, detail=f"No hay datos para {country}")
+
+    # Agrupar por el tipo de producto y sumar la cantidad producida
+    production_stats = country_data.groupby('commodity').agg({
+        'production_value': 'sum',
+        'production_unit': 'first'
+    }).reset_index()
+
+    # Ordenar por valor de producción descendente y limitar a los principales productos
+    top_products = production_stats.sort_values(by='production_value', ascending=False).head(5)
+
+    return {
+        "country": normalized_country,
+        "products": [
+            {
+                "name": str(row['commodity']),
+                "volume": float(row['production_value']),
+                "unit": str(row['production_unit'])
+            } for _, row in top_products.iterrows()
+        ]
+    }
 
 @app.get("/stats/companies/{country}")
 def get_companies_data(country: str):
