@@ -7,11 +7,8 @@ COPY ./app /code/app
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Exponer el puerto para Railway
+# Exponer el puerto 8000 (Railway asignará el puerto real)
 EXPOSE 8000
 
-# Usar un valor por defecto para PORT
-ENV PORT=8000
-
-# Ejecutar uvicorn asegurando que la variable PORT es interpretada correctamente
+# Ejecutar uvicorn usando sh para interpretar correctamente $PORT
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port $PORT"]
