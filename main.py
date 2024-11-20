@@ -263,6 +263,108 @@ def get_production_data(country: str):
             } for _, row in top_products.iterrows()
         ]
     }
+@app.get("/stats/global")
+def get_global_stats():
+    """Obtener estadísticas globales agregadas"""
+    if df.empty:
+        raise HTTPException(status_code=500, detail="Datos no disponibles")
+
+    total_emissions = df['total_emissions_MtCO2e'].sum()
+    total_production = df['production_value'].sum()
+    number_of_companies = df['parent_entity'].nunique()
+    number_of_sectors = df['parent_type'].nunique()
+
+    return {
+        "total_emissions": float(total_emissions),
+        "total_production": float(total_production),
+        "number_of_companies": int(number_of_companies),
+        "number_of_sectors": int(number_of_sectors)
+    }
+
+@app.get("/stats/emissions_by_sector/global")
+def get_global_emissions_by_sector():
+    """Obtener emisiones globales por sector"""
+    if df.empty:
+        raise HTTPException(status_code=500, detail="Datos no disponibles")
+
+    sector_stats = df.groupby('parent_type').agg({
+        'total_emissions_MtCO2e': 'sum'
+    }).reset_index()
+
+    return {
+        "sectors": [
+            {
+                "name": str(row['parent_type']),
+                "total_emissions": float(row['total_emissions_MtCO2e'])
+            } for _, row in sector_stats.iterrows()
+        ]
+    }
+
+@app.get("/stats/historical/global")
+def get_global_historical_data():
+    """Obtener datos históricos globales de emisiones"""
+    if df.empty:
+        raise HTTPException(status_code=500, detail="Datos no disponibles")
+
+    historical = df.groupby('year').agg({
+        'total_emissions_MtCO2e': 'sum'
+    }).reset_index()
+
+    return {
+        "timeline": [
+            {
+                "year": int(row['year']),
+                "total_emissions": float(row['total_emissions_MtCO2e'])
+            } for _, row in historical.iterrows()
+        ]
+    }
+
+@app.get("/stats/companies/global")
+def get_global_companies_data():
+    """Obtener información detallada de las empresas a nivel global"""
+    if df.empty:
+        raise HTTPException(status_code=500, detail="Datos no disponibles")
+
+    company_stats = df.groupby('parent_entity').agg({
+        'total_emissions_MtCO2e': 'sum',
+        'parent_type': 'first'
+    }).reset_index()
+
+    top_companies = company_stats.sort_values(by='total_emissions_MtCO2e', ascending=False).head(10)
+
+    return {
+        "companies": [
+            {
+                "name": str(row['parent_entity']),
+                "sector": str(row['parent_type']),
+                "total_emissions": float(row['total_emissions_MtCO2e'])
+            } for _, row in top_companies.iterrows()
+        ]
+    }
+
+@app.get("/stats/production/global")
+def get_global_production_data():
+    """Obtener los principales productos a nivel global"""
+    if df.empty:
+        raise HTTPException(status_code=500, detail="Datos no disponibles")
+
+    production_stats = df.groupby('commodity').agg({
+        'production_value': 'sum',
+        'production_unit': 'first'
+    }).reset_index()
+
+    top_products = production_stats.sort_values(by='production_value', ascending=False).head(5)
+
+    return {
+        "products": [
+            {
+                "name": str(row['commodity']),
+                "volume": float(row['production_value']),
+                "unit": str(row['production_unit'])
+            } for _, row in top_products.iterrows()
+        ]
+    }
+
 
 @app.get("/stats/companies/{country}")
 def get_companies_data(country: str):
