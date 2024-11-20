@@ -4,7 +4,7 @@ from fastapi import FastAPI
 
 # Definir la ruta relativa para el archivo CSV
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-file_path = os.path.join(BASE_DIR, "data", "df_co2_countrys.csv")
+file_path = os.path.join("app", "data", "df_co2_countrys.csv")
 
 # Intentar cargar el archivo CSV
 try:
