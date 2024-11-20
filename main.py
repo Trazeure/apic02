@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict
@@ -14,6 +15,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Función auxiliar para convertir tipos numpy
+def convert_numpy_types(obj):
+    if isinstance(obj, (np.integer, np.int64)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    return obj
 
 # Mapeo de países para normalizar nombres
 COUNTRY_MAPPING = {
@@ -111,7 +126,7 @@ def get_countries():
     if df.empty:
         raise HTTPException(status_code=500, detail="Datos no disponibles")
     
-    available_countries = df['normalized_country'].unique().tolist()
+    available_countries = convert_numpy_types(df['normalized_country'].unique().tolist())
     
     valid_countries = []
     for country in available_countries:
@@ -141,11 +156,11 @@ def get_country_stats(country: str):
         "total_emissions": float(country_data['total_emissions_MtCO2e'].sum()),
         "average_emissions": float(country_data['total_emissions_MtCO2e'].mean()),
         "total_production": float(country_data['production_value'].sum()),
-        "number_of_companies": len(country_data['parent_entity'].unique()),
-        "number_of_sectors": len(country_data['parent_type'].unique()),
+        "number_of_companies": int(len(country_data['parent_entity'].unique())),
+        "number_of_sectors": int(len(country_data['parent_type'].unique())),
         "latest_year": int(country_data['year'].max()),
         "earliest_year": int(country_data['year'].min()),
-        "total_commodities": len(country_data['commodity'].unique())
+        "total_commodities": int(len(country_data['commodity'].unique()))
     }
 
 @app.get("/stats/emissions_by_sector/{country}")
@@ -172,7 +187,7 @@ def get_emissions_by_sector(country: str):
     return {
         "country": normalized_country,
         "sectors": [{
-            "name": row['parent_type'],
+            "name": str(row['parent_type']),
             "total_emissions": float(row['total_emissions_MtCO2e']),
             "total_production": float(row['production_value']),
             "number_of_companies": int(row['parent_entity']),
@@ -238,8 +253,8 @@ def get_companies_data(country: str):
     }).reset_index()
     
     # Calcular estadísticas generales para comparativas
-    country_total_emissions = country_data['total_emissions_MtCO2e'].sum()
-    country_avg_emissions = country_data['total_emissions_MtCO2e'].mean()
+    country_total_emissions = float(country_data['total_emissions_MtCO2e'].sum())
+    country_avg_emissions = float(country_data['total_emissions_MtCO2e'].mean())
     
     # Tendencias anuales por empresa
     company_trends = {}
@@ -255,38 +270,41 @@ def get_companies_data(country: str):
             'production': float(row['production_value'])
         } for _, row in yearly_data.iterrows()]
     
-    return {
+    # Convertir todos los datos a tipos Python nativos
+    response_data = {
         "country": normalized_country,
-        "summary": {
-            "total_companies": len(company_stats),
-            "total_country_emissions": float(country_total_emissions),
-            "average_company_emissions": float(country_avg_emissions),
-            "sectors_represented": len(country_data['parent_type'].unique()),
-            "years_covered": sorted(country_data['year'].unique().tolist())
-        },
-        "companies": [{
-            "name": row['parent_entity'],
-            "sector": row['parent_type'],
-            "total_emissions": float(row['total_emissions_MtCO2e']),
-            "total_production": float(row['production_value']),
-            "commodities": row['commodity'],
-            "years_active": sorted(row['year']),
-            "emissions_percentage": float(row['total_emissions_MtCO2e'] / country_total_emissions * 100),
-            "emissions_vs_average": float(row['total_emissions_MtCO2e'] - country_avg_emissions),
-            "historical_data": company_trends[row['parent_entity']],
-            "metrics": {
-                "emissions_per_production": float(row['total_emissions_MtCO2e'] / row['production_value']) if row['production_value'] > 0 else 0,
-                "commodities_count": len(row['commodity']),
-                "years_count": len(row['year'])
-            }
-        } for _, row in company_stats.iterrows()],
-        "sector_breakdown": country_data.groupby('parent_type').agg({
-            'parent_entity': 'nunique',
-            'total_emissions_MtCO2e': 'sum'
-        }).reset_index().to_dict('records'),
-        "metadata": {
-            "last_updated": country_data['year'].max(),
-            "data_completeness": len(country_data) / len(df) * 100,
-            "total_records": len(country_data)
+    "summary": {
+        "total_companies": int(len(company_stats)),
+        "total_country_emissions": float(country_total_emissions),
+        "average_company_emissions": float(country_avg_emissions),
+        "sectors_represented": int(len(country_data['parent_type'].unique())),
+        "years_covered": convert_numpy_types(sorted(country_data['year'].unique().tolist()))
+    },
+    "companies": [{
+        "name": str(row['parent_entity']),
+        "sector": str(row['parent_type']),
+        "total_emissions": float(row['total_emissions_MtCO2e']),
+        "total_production": float(row['production_value']),
+        "commodities": convert_numpy_types(row['commodity']),
+        "years_active": convert_numpy_types(sorted(row['year'])),
+        "emissions_percentage": float(row['total_emissions_MtCO2e'] / country_total_emissions * 100),
+        "emissions_vs_average": float(row['total_emissions_MtCO2e'] - country_avg_emissions),
+        "historical_data": convert_numpy_types(company_trends[row['parent_entity']]),
+        "metrics": {
+            "emissions_per_production": float(row['total_emissions_MtCO2e'] / row['production_value']) if row['production_value'] > 0 else 0,
+            "commodities_count": int(len(row['commodity'])),
+            "years_count": int(len(row['year']))
         }
+    } for _, row in company_stats.iterrows()],
+    "sector_breakdown": convert_numpy_types(country_data.groupby('parent_type').agg({
+        'parent_entity': 'nunique',
+        'total_emissions_MtCO2e': 'sum'
+    }).reset_index().to_dict('records')),
+    "metadata": {
+        "last_updated": int(country_data['year'].max()),
+        "data_completeness": float(len(country_data) / len(df) * 100),
+        "total_records": int(len(country_data))
     }
+}
+    return response_data
+       
