@@ -1,9 +1,17 @@
 from fastapi import FastAPI, Query
+import os
 import pandas as pd
 
-# Cargar el archivo CSV
-file_path = r"C:\Users\Desti\OneDrive\Escritorio\api_c02\data\df_co2_countrys.csv"
-df = pd.read_csv(file_path)
+# Definir la ruta relativa del archivo CSV
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(BASE_DIR, "data", "df_co2_countrys.csv")
+
+# Intentar cargar el archivo CSV
+try:
+    df = pd.read_csv(file_path)
+except FileNotFoundError:
+    df = pd.DataFrame()  # Crear un DataFrame vacío si el archivo no existe
+    print(f"Error: No se encontró el archivo CSV en la ruta: {file_path}")
 
 # Crear la aplicación FastAPI
 app = FastAPI()
@@ -17,6 +25,8 @@ def get_all_data():
     """
     Retorna todos los datos del CSV
     """
+    if df.empty:
+        return {"error": "El archivo CSV no se cargó correctamente"}
     return df.to_dict(orient="records")
 
 @app.get("/data/filter")
@@ -28,6 +38,9 @@ def filter_data(
     """
     Filtrar los datos por país, año y/o tipo de commodity
     """
+    if df.empty:
+        return {"error": "El archivo CSV no se cargó correctamente"}
+    
     filtered_df = df
     if country:
         filtered_df = filtered_df[filtered_df["country"] == country]
@@ -43,6 +56,9 @@ def total_emissions_by_country():
     """
     Obtener las emisiones totales por país
     """
+    if df.empty:
+        return {"error": "El archivo CSV no se cargó correctamente"}
+    
     total_emissions = df.groupby("country")["total_emissions_MtCO2e"].sum().reset_index()
     return total_emissions.to_dict(orient="records")
 
@@ -51,5 +67,8 @@ def emissions_by_commodity():
     """
     Obtener las emisiones totales por tipo de commodity
     """
+    if df.empty:
+        return {"error": "El archivo CSV no se cargó correctamente"}
+    
     emissions_by_commodity = df.groupby("commodity")["total_emissions_MtCO2e"].sum().reset_index()
     return emissions_by_commodity.to_dict(orient="records")
