@@ -4,6 +4,22 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict
+import os
+import pandas as pd
+import numpy as np
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional, List, Dict
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+import time
+
 
 app = FastAPI(title="API de Emisiones CO2")
 
@@ -116,7 +132,38 @@ def read_root():
             "country_stats": "/stats/country/{country}",
             "emissions_by_sector": "/stats/emissions_by_sector/{country}",
             "historical_data": "/stats/historical/{country}",
-            "companies": "/stats/companies/{country}"
+            "companies": "/stats/companies/{country}",
+            # Nuevos endpoints
+            "production": "/stats/production/{country}",
+            "global_stats": "/stats/global",
+            "global_emissions_by_sector": "/stats/emissions_by_sector/global",
+            "global_historical": "/stats/historical/global",
+            "global_companies": "/stats/companies/global",
+            "global_production": "/stats/production/global",
+            "model_predictions": "/model/predictions"
+        },
+        "documentation": {
+            "global_endpoints": {
+                "stats": "Obtiene estadísticas globales agregadas",
+                "emissions_by_sector": "Obtiene emisiones globales por sector",
+                "historical": "Obtiene datos históricos globales de emisiones",
+                "companies": "Obtiene información de las top 10 empresas globalmente",
+                "production": "Obtiene los principales productos a nivel global"
+            },
+            "country_endpoints": {
+                "countries_list": "Lista de países disponibles con coordenadas",
+                "country_stats": "Estadísticas generales de un país específico",
+                "emissions_by_sector": "Emisiones por sector para un país",
+                "historical_data": "Datos históricos de emisiones por país",
+                "companies": "Información detallada de empresas por país",
+                "production": "Productos principales producidos por país"
+            },
+            "model_endpoints": {
+                "predictions": "Predicciones y métricas del modelo de emisiones",
+                "country_predictions": "Predicciones y análisis específico por país",
+                "simulation": "Simulación de reducción de emisiones por país y commodity"
+                
+            }
         }
     }
 
@@ -365,6 +412,395 @@ def get_global_production_data():
         ]
     }
 
+@app.get("/model/predictions")
+def get_model_predictions():
+    """Endpoint para obtener predicciones y métricas del modelo"""
+    try:
+        # Cargar datos
+        df = pd.read_csv("app/data/df_co2_countrys.csv")
+        
+        # Preparar datos para el modelo
+        features = ['production_value', 'commodity', 'parent_entity', 'country']
+        target = 'total_emissions_MtCO2e'
+        
+        X = df[features]
+        y = df[target]
+        
+        # División de datos
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Preprocesamiento y modelo
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ('num', StandardScaler(), ['production_value']),
+                ('cat', OneHotEncoder(handle_unknown='ignore'), 
+                 ['commodity', 'parent_entity', 'country'])
+            ])
+        
+        rf = RandomForestRegressor(
+            n_estimators=200,
+            max_depth=20,
+            min_samples_split=5,
+            random_state=42,
+            n_jobs=-1
+        )
+        
+        # Pipeline
+        model_pipeline = Pipeline([
+            ('preprocessor', preprocessor),
+            ('regressor', rf)
+        ])
+        
+        # Entrenamiento y predicciones
+        start_time = time.time()
+        model_pipeline.fit(X_train, y_train)
+        training_time = time.time() - start_time
+        
+        y_pred = model_pipeline.predict(X_test)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        r2 = r2_score(y_test, y_pred)
+        
+        # Predicciones futuras
+        df['year'] = pd.to_datetime(df['year'], format='%Y')
+        emissions_by_year = df.groupby('year')['total_emissions_MtCO2e'].sum().sort_index()
+        
+        model = ExponentialSmoothing(
+            emissions_by_year,
+            seasonal='add',
+            seasonal_periods=12,
+            trend='add'
+        ).fit()
+        
+        # Generar predicciones para los próximos 5 años
+        future_dates = pd.date_range(
+            emissions_by_year.index[-1], 
+            periods=6, 
+            freq='Y'
+        )[1:]
+        forecast = model.forecast(5)
+        
+        # Preparar datos históricos
+        historical_data = [{
+            'year': date.year,
+            'emissions': float(value),
+            'type': 'historical'
+        } for date, value in zip(emissions_by_year.index, emissions_by_year.values)]
+        
+        # Preparar predicciones
+        forecast_data = [{
+            'year': date.year,
+            'emissions': float(value),
+            'type': 'forecast'
+        } for date, value in zip(future_dates, forecast)]
+        
+        return {
+            "metrics": {
+                "rmse": float(rmse),
+                "r2_score": float(r2),
+                "training_time": float(training_time)
+            },
+            "predictions": {
+                "historical": historical_data,
+                "forecast": forecast_data
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/model/country_predictions/{country}")
+def get_country_model_predictions(country: str):
+    """Endpoint para obtener predicciones específicas por país"""
+    try:
+        # Cargar datos
+        if df.empty:
+            raise HTTPException(status_code=500, detail="Datos no disponibles")
+        
+        country_data = df[df['country'] == country].copy()
+        if country_data.empty:
+            raise HTTPException(status_code=404, detail=f"No hay datos para {country}")
+
+        # Entrenar modelo específico para el país
+        features = ['production_value', 'commodity', 'parent_entity', 'country']
+        target = 'total_emissions_MtCO2e'
+        
+        X = country_data[features]
+        y = country_data[target]
+        
+        # División de datos
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Preprocesamiento y modelo
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ('num', StandardScaler(), ['production_value']),
+                ('cat', OneHotEncoder(handle_unknown='ignore'), 
+                 ['commodity', 'parent_entity', 'country'])
+            ])
+        
+        rf = RandomForestRegressor(
+            n_estimators=200,
+            max_depth=20,
+            min_samples_split=5,
+            random_state=42,
+            n_jobs=-1
+        )
+        
+        # Pipeline
+        model_pipeline = Pipeline([
+            ('preprocessor', preprocessor),
+            ('regressor', rf)
+        ])
+        
+        # Entrenamiento y métricas del modelo
+        start_time = time.time()
+        model_pipeline.fit(X_train, y_train)
+        training_time = time.time() - start_time
+        
+        y_pred = model_pipeline.predict(X_test)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        r2 = r2_score(y_test, y_pred)
+
+        # Preparar datos temporales para predicciones
+        country_data['year'] = pd.to_datetime(country_data['year'], format='%Y')
+        emissions_by_year = country_data.groupby('year')['total_emissions_MtCO2e'].sum().sort_index()
+        
+        # Modelo de predicción temporal
+        model = ExponentialSmoothing(
+            emissions_by_year,
+            seasonal='add',
+            seasonal_periods=12,
+            trend='add'
+        ).fit()
+        
+        # Generar predicciones
+        periods = 5
+        future_dates = pd.date_range(emissions_by_year.index[-1], periods=periods+1, freq='Y')[1:]
+        forecast = model.forecast(periods)
+        
+        # Análisis de tendencia
+        recent_values = emissions_by_year.tail(5)
+        recent_change = (recent_values.iloc[-1] - recent_values.iloc[0]) / recent_values.iloc[0] * 100
+        forecast_change = (forecast[-1] - emissions_by_year.iloc[-1]) / emissions_by_year.iloc[-1] * 100
+        
+        # Calcular tendencia
+        trend = np.polyfit(range(len(recent_values)), recent_values.values, 1)[0]
+        annual_change = trend / recent_values.mean() * 100
+        
+        # Determinar estado
+        threshold = 2
+        if annual_change < -threshold:
+            status = "POSITIVO"
+            message = "El país muestra una tendencia positiva de reducción"
+            recommendations = [
+                "Mantener políticas actuales de reducción",
+                "Establecer objetivos más ambiciosos",
+                "Compartir mejores prácticas con otros países",
+                "Invertir en innovación verde",
+                "Monitorear y ajustar estrategias existentes"
+            ]
+        elif annual_change > threshold:
+            status = "ALERTA"
+            message = "Se requieren acciones inmediatas para reducir emisiones"
+            recommendations = [
+                "Implementar medidas urgentes de reducción",
+                "Actualizar tecnologías industriales",
+                "Acelerar transición a energías limpias",
+                "Revisar y fortalecer regulaciones",
+                "Considerar incentivos económicos verdes"
+            ]
+        else:
+            status = "ESTABLE"
+            message = "Se mantiene estable pero hay espacio para mejoras"
+            recommendations = [
+                "Identificar oportunidades de mejora",
+                "Establecer objetivos más específicos",
+                "Mejorar sistemas de monitoreo",
+                "Desarrollar planes de transición",
+                "Fomentar innovación en tecnologías limpias"
+            ]
+
+        # Preparar respuesta
+        return {
+            "country": country,
+            "metrics": {
+                "rmse": float(rmse),
+                "r2_score": float(r2),
+                "training_time": float(training_time)
+            },
+            "status": {
+                "current_state": status,
+                "message": message,
+                "annual_trend": float(annual_change),
+                "recent_change": float(recent_change),
+                "forecast_change": float(forecast_change)
+            },
+            "predictions": {
+                "historical": [
+                    {
+                        "year": date.year,
+                        "emissions": float(value)
+                    } for date, value in zip(emissions_by_year.index, emissions_by_year.values)
+                ],
+                "forecast": [
+                    {
+                        "year": date.year,
+                        "emissions": float(value)
+                    } for date, value in zip(future_dates, forecast)
+                ]
+            },
+            "recommendations": recommendations,
+            "model_info": {
+                "total_years": len(emissions_by_year),
+                "last_known_year": int(emissions_by_year.index[-1].year),
+                "last_known_value": float(emissions_by_year.iloc[-1]),
+                "forecast_horizon": periods,
+                "data_points": len(country_data),
+                "features_used": features
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/model/simulation/{country}/{commodity}")
+def get_simulation_predictions(country: str, commodity: str):
+    """Endpoint para obtener simulaciones de reducción de emisiones"""
+    try:
+        if df.empty:
+            raise HTTPException(status_code=500, detail="Datos no disponibles")
+
+        # Verificar país y commodity
+        country_data = df[(df['country'] == country) & (df['commodity'] == commodity)]
+        if country_data.empty:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No hay datos para {country} y {commodity}"
+            )
+
+        # Crear y entrenar modelo usando la función original
+        model, X, metrics = create_simulation_model(df)
+        
+        # Definir rangos de reducción (igual que en el original)
+        reduction_percentages = np.arange(5, 51, 5)
+        
+        # Ejecutar simulación usando la función original
+        results = simulate_reduction(
+            df=df,
+            model=model,
+            X=X,
+            country=country,
+            commodity=commodity,
+            reduction_percentages=reduction_percentages,
+            year_target=2030
+        )
+        
+        if results is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No se pudieron generar resultados de simulación"
+            )
+
+        # Obtener emisiones base (igual que en el original)
+        base_emissions = df[
+            (df['country'] == country) & 
+            (df['commodity'] == commodity)
+        ]['total_emissions_MtCO2e'].iloc[-1]
+        
+        # Encontrar la mejor reducción
+        best_reduction = results.loc[results['reduction_efficiency'].idxmax()]
+
+        # Preparar respuesta manteniendo el formato original de los datos
+        return {
+            "analysis_results": {
+                "country": country,
+                "commodity": commodity,
+                "current_emissions": float(base_emissions)
+            },
+            "model_metrics": {
+                "rmse": float(metrics['rmse']),
+                "mae": float(metrics['mae']),
+                "r2_score": float(metrics['r2'])
+            },
+            "simulation_results": results.to_dict('records'),
+            "recommendations": {
+                "optimal_reduction": float(best_reduction['reduction_percentage']),
+                "emissions_reduction": float(best_reduction['emissions_reduction']),
+                "reduction_efficiency": float(best_reduction['reduction_efficiency']),
+                "projected_emissions": float(best_reduction['predicted_emissions']),
+                "improvement_percentage": float(
+                    (best_reduction['emissions_reduction']/base_emissions*100)
+                )
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Agregar las funciones originales necesarias
+def create_simulation_model(df):
+    """Crear y entrenar modelo de simulación"""
+    features = ['production_value', 'commodity', 'parent_entity', 'country']
+    target = 'total_emissions_MtCO2e'
+    
+    X = df[features]
+    y = df[target]
+    
+    # División para evaluación
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', StandardScaler(), ['production_value']),
+            ('cat', OneHotEncoder(handle_unknown='ignore'), 
+             ['commodity', 'parent_entity', 'country'])
+        ])
+    
+    model = Pipeline([
+        ('preprocessor', preprocessor),
+        ('regressor', RandomForestRegressor(n_estimators=200, max_depth=20, random_state=42))
+    ])
+    
+    model.fit(X_train, y_train)
+    
+    # Calcular métricas
+    y_pred = model.predict(X_test)
+    metrics = {
+        'rmse': np.sqrt(mean_squared_error(y_test, y_pred)),
+        'mae': mean_absolute_error(y_test, y_pred),
+        'r2': r2_score(y_test, y_pred)
+    }
+    
+    return model, X, metrics
+
+def simulate_reduction(df, model, X, country, commodity, reduction_percentages, year_target=2030):
+    """Simular reducciones de producción y su impacto"""
+    base_data = df[(df['country'] == country) & (df['commodity'] == commodity)].copy()
+    
+    if len(base_data) == 0:
+        return None
+    
+    latest_data = base_data.iloc[-1]
+    latest_production = latest_data['production_value']
+    base_emissions = latest_data['total_emissions_MtCO2e']
+    
+    results = []
+    for reduction in reduction_percentages:
+        new_production = latest_production * (1 - reduction/100)
+        sim_data = pd.DataFrame([latest_data])
+        sim_data['production_value'] = new_production
+        
+        X_sim = sim_data[X.columns]
+        predicted_emissions = model.predict(X_sim)[0]
+        
+        results.append({
+            'reduction_percentage': reduction,
+            'new_production': new_production,
+            'predicted_emissions': predicted_emissions,
+            'emissions_reduction': base_emissions - predicted_emissions,
+            'reduction_efficiency': (base_emissions - predicted_emissions) / (reduction/100)
+        })
+    
+    return pd.DataFrame(results)
 
 @app.get("/stats/companies/{country}")
 def get_companies_data(country: str):
