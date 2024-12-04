@@ -512,7 +512,6 @@ def get_model_predictions():
 def get_country_model_predictions(country: str):
     """Endpoint para obtener predicciones específicas por país"""
     try:
-        # Cargar datos
         if df.empty:
             raise HTTPException(status_code=500, detail="Datos no disponibles")
         
@@ -520,7 +519,7 @@ def get_country_model_predictions(country: str):
         if country_data.empty:
             raise HTTPException(status_code=404, detail=f"No hay datos para {country}")
 
-        # Preparación del modelo (código anterior sin cambios)
+        # Preparación del modelo ML
         features = ['production_value', 'commodity', 'parent_entity', 'country']
         target = 'total_emissions_MtCO2e'
         
@@ -558,44 +557,52 @@ def get_country_model_predictions(country: str):
         rmse = np.sqrt(mean_squared_error(y_test, y_pred))
         r2 = r2_score(y_test, y_pred)
 
-        # Preparar datos temporales - FIXED
-        country_data['year'] = pd.to_datetime(country_data['year'].astype(str), format='%Y')
+        # Preparación de datos temporales mejorada
         emissions_by_year = country_data.groupby('year')['total_emissions_MtCO2e'].sum()
         
-        # Modelo de predicción temporal - FIXED
+        # Crear índice de fechas usando 'YE'
+        years = pd.date_range(
+            start=f"{min(emissions_by_year.index)}-01-01",
+            end=f"{max(emissions_by_year.index)}-12-31",
+            freq='YE'
+        )
+        
+        # Crear serie temporal con índice de fechas adecuado
+        emissions_ts = pd.Series(
+            emissions_by_year.values,
+            index=years[:len(emissions_by_year)]
+        )
+        
+        # Modelo de predicción temporal con índice apropiado
         model = ExponentialSmoothing(
-            emissions_by_year,
-            seasonal='add',
-            seasonal_periods=12,
+            emissions_ts,
+            seasonal_periods=1,
             trend='add',
-            freq='YE'  # Explicitly set frequency to year-end
+            seasonal=None,
+            initialization_method='estimated'
         ).fit()
         
-        # Generar predicciones - FIXED
-        periods = 5
-        last_date = emissions_by_year.index[-1]
+        # Generar fechas futuras
         future_dates = pd.date_range(
-            start=last_date, 
-            periods=periods+1, 
+            start=years[-1] + pd.DateOffset(years=1),
+            periods=5,
             freq='YE'
-        )[1:]  # Skip the first date as it's the last known date
+        )
         
-        forecast = model.forecast(periods)
+        # Realizar predicciones
+        forecast = model.forecast(5)
+        forecast.index = future_dates
         
-        # Análisis de tendencia - FIXED
-        recent_values = emissions_by_year.tail(5)
-        recent_first = recent_values.iloc[0]
-        recent_last = recent_values.iloc[-1]
-        recent_change = (recent_last - recent_first) / recent_first * 100
-        
-        # Usar .values para acceder a los valores del forecast
-        forecast_change = (forecast.values[-1] - recent_last) / recent_last * 100
+        # Análisis de tendencia
+        recent_values = emissions_ts.tail(5)
+        recent_change = ((recent_values.iloc[-1] - recent_values.iloc[0]) / recent_values.iloc[0] * 100)
+        forecast_change = ((forecast.iloc[-1] - recent_values.iloc[-1]) / recent_values.iloc[-1] * 100)
         
         # Calcular tendencia
         trend = np.polyfit(range(len(recent_values)), recent_values.values, 1)[0]
         annual_change = trend / recent_values.mean() * 100
         
-        # Determinar estado (sin cambios)
+        # Determinar estado
         threshold = 2
         if annual_change < -threshold:
             status = "POSITIVO"
@@ -628,7 +635,6 @@ def get_country_model_predictions(country: str):
                 "Fomentar innovación en tecnologías limpias"
             ]
 
-        # Preparar respuesta
         return {
             "country": country,
             "metrics": {
@@ -646,29 +652,30 @@ def get_country_model_predictions(country: str):
             "predictions": {
                 "historical": [
                     {
-                        "year": date.year,
+                        "year": index.year,
                         "emissions": float(value)
-                    } for date, value in zip(emissions_by_year.index, emissions_by_year.values)
+                    } for index, value in emissions_ts.items()
                 ],
                 "forecast": [
                     {
-                        "year": date.year,
+                        "year": index.year,
                         "emissions": float(value)
-                    } for date, value in zip(future_dates, forecast)
+                    } for index, value in forecast.items()
                 ]
             },
             "recommendations": recommendations,
             "model_info": {
-                "total_years": len(emissions_by_year),
-                "last_known_year": int(emissions_by_year.index[-1].year),
-                "last_known_value": float(emissions_by_year.iloc[-1]),
-                "forecast_horizon": periods,
+                "total_years": len(emissions_ts),
+                "last_known_year": int(emissions_ts.index[-1].year),
+                "last_known_value": float(emissions_ts.iloc[-1]),
+                "forecast_horizon": 5,
                 "data_points": len(country_data),
                 "features_used": features
             }
         }
         
     except Exception as e:
+        print(f"Error en predicción para {country}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.get("/model/simulation/{country}/{commodity}")
