@@ -520,17 +520,15 @@ def get_country_model_predictions(country: str):
         if country_data.empty:
             raise HTTPException(status_code=404, detail=f"No hay datos para {country}")
 
-        # Entrenar modelo específico para el país
+        # Preparación del modelo (código anterior sin cambios)
         features = ['production_value', 'commodity', 'parent_entity', 'country']
         target = 'total_emissions_MtCO2e'
         
         X = country_data[features]
         y = country_data[target]
         
-        # División de datos
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         
-        # Preprocesamiento y modelo
         preprocessor = ColumnTransformer(
             transformers=[
                 ('num', StandardScaler(), ['production_value']),
@@ -546,13 +544,12 @@ def get_country_model_predictions(country: str):
             n_jobs=-1
         )
         
-        # Pipeline
         model_pipeline = Pipeline([
             ('preprocessor', preprocessor),
             ('regressor', rf)
         ])
         
-        # Entrenamiento y métricas del modelo
+        # Entrenamiento y métricas
         start_time = time.time()
         model_pipeline.fit(X_train, y_train)
         training_time = time.time() - start_time
@@ -561,33 +558,44 @@ def get_country_model_predictions(country: str):
         rmse = np.sqrt(mean_squared_error(y_test, y_pred))
         r2 = r2_score(y_test, y_pred)
 
-        # Preparar datos temporales para predicciones
-        country_data['year'] = pd.to_datetime(country_data['year'], format='%Y')
-        emissions_by_year = country_data.groupby('year')['total_emissions_MtCO2e'].sum().sort_index()
+        # Preparar datos temporales - FIXED
+        country_data['year'] = pd.to_datetime(country_data['year'].astype(str), format='%Y')
+        emissions_by_year = country_data.groupby('year')['total_emissions_MtCO2e'].sum()
         
-        # Modelo de predicción temporal
+        # Modelo de predicción temporal - FIXED
         model = ExponentialSmoothing(
             emissions_by_year,
             seasonal='add',
             seasonal_periods=12,
-            trend='add'
+            trend='add',
+            freq='YE'  # Explicitly set frequency to year-end
         ).fit()
         
-        # Generar predicciones
+        # Generar predicciones - FIXED
         periods = 5
-        future_dates = pd.date_range(emissions_by_year.index[-1], periods=periods+1, freq='Y')[1:]
+        last_date = emissions_by_year.index[-1]
+        future_dates = pd.date_range(
+            start=last_date, 
+            periods=periods+1, 
+            freq='YE'
+        )[1:]  # Skip the first date as it's the last known date
+        
         forecast = model.forecast(periods)
         
-        # Análisis de tendencia
+        # Análisis de tendencia - FIXED
         recent_values = emissions_by_year.tail(5)
-        recent_change = (recent_values.iloc[-1] - recent_values.iloc[0]) / recent_values.iloc[0] * 100
-        forecast_change = (forecast[-1] - emissions_by_year.iloc[-1]) / emissions_by_year.iloc[-1] * 100
+        recent_first = recent_values.iloc[0]
+        recent_last = recent_values.iloc[-1]
+        recent_change = (recent_last - recent_first) / recent_first * 100
+        
+        # Usar .values para acceder a los valores del forecast
+        forecast_change = (forecast.values[-1] - recent_last) / recent_last * 100
         
         # Calcular tendencia
         trend = np.polyfit(range(len(recent_values)), recent_values.values, 1)[0]
         annual_change = trend / recent_values.mean() * 100
         
-        # Determinar estado
+        # Determinar estado (sin cambios)
         threshold = 2
         if annual_change < -threshold:
             status = "POSITIVO"
@@ -662,6 +670,7 @@ def get_country_model_predictions(country: str):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
 @app.get("/model/simulation/{country}/{commodity}")
 def get_simulation_predictions(country: str, commodity: str):
     """Endpoint para obtener simulaciones de reducción de emisiones"""
@@ -880,4 +889,21 @@ def get_companies_data(country: str):
     }
 }
     return response_data
-       
+
+@app.get("/stats/countries")
+def get_all_countries_emissions():
+    """Obtener datos de emisiones para todos los países"""
+    if df.empty:
+        raise HTTPException(status_code=500, detail="Datos no disponibles")
+
+    country_emissions = df.groupby('normalized_country')['total_emissions_MtCO2e'].sum().reset_index()
+    country_emissions = country_emissions.sort_values('total_emissions_MtCO2e', ascending=False)
+
+    return {
+        "countries": [
+            {
+                "name": str(row['normalized_country']),
+                "total_emissions": float(row['total_emissions_MtCO2e'])
+            } for _, row in country_emissions.iterrows()
+        ]
+    }
